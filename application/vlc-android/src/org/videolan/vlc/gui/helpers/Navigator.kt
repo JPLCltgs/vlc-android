@@ -53,6 +53,7 @@ import org.videolan.vlc.gui.BaseFragment
 import org.videolan.vlc.gui.MainActivity
 import org.videolan.vlc.gui.MoreFragment
 import org.videolan.vlc.gui.PlaylistFragment
+import org.videolan.vlc.gui.YoutubeFragment
 import org.videolan.vlc.gui.audio.AudioBrowserFragment
 import org.videolan.vlc.gui.browser.BaseBrowserFragment
 import org.videolan.vlc.gui.browser.MainBrowserFragment
@@ -103,7 +104,7 @@ class Navigator : NavigationBarView.OnItemSelectedListener, DefaultLifecycleObse
             R.id.nav_directories -> MainBrowserFragment().apply {
                 arguments = bundleOf(EXTRA_FOR_ESPRESSO to forExpresso)
             }
-            R.id.nav_playlists -> PlaylistFragment()
+            R.id.nav_youtube -> YoutubeFragment()
             R.id.nav_more -> MoreFragment()
             else -> VideoBrowserFragment()
         }
