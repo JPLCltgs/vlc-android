@@ -3,7 +3,7 @@
  *  YoutubeFragment.kt
  * *************************************************************************
  * Copyright © 2020 VLC authors and VideoLAN
- * Author: Nicolas POMEPUY
+ * Author: JPLCltgs
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -39,19 +39,34 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.TextView
 import androidx.appcompat.view.ActionMode
-import androidx.fragment.app.Fragment
 import androidx.viewpager2.widget.ViewPager2
 import com.google.android.material.tabs.TabLayout
+import com.google.android.material.tabs.TabLayoutMediator
 import org.json.JSONArray
+import org.videolan.medialibrary.interfaces.Medialibrary
+import org.videolan.medialibrary.interfaces.media.MediaWrapper
+import org.videolan.medialibrary.media.MediaWrapperImpl
 import org.videolan.tools.isStarted
 import org.videolan.vlc.R
+import org.videolan.vlc.gui.helpers.UiTools.addFavoritesIcon
+import org.videolan.vlc.gui.helpers.UiTools.removeDrawables
 import org.videolan.vlc.interfaces.Filterable
 import org.videolan.vlc.util.findCurrentFragment
-
+import org.videolan.vlc.viewmodels.PlaylistModel
+import androidx.core.net.toUri
+import org.videolan.vlc.PlaybackService
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
+import androidx.lifecycle.ViewModelProvider
 
 class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filterable {
     override fun getTitle() = getString(R.string.youtube)
+
+
+    private var medialibrary: Medialibrary? = null
     private lateinit var webView: WebView
     private val TAG = "YoutubeFragment"
     private val handler = Handler(Looper.getMainLooper())
@@ -64,6 +79,13 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
     override val hasTabs = true
     private var tabLayout: TabLayout? = null
     private lateinit var viewPager: ViewPager2
+    private lateinit var tabLayoutMediator: TabLayoutMediator
+    private var needToReopenSearch = false
+    private var lastQuery = ""
+
+    private val playlistModel by lazy { PlaylistModel.get(this) }
+
+
     private fun getCurrentFragment() = childFragmentManager.findFragmentByTag("f" + viewPager.currentItem)
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
@@ -92,9 +114,9 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
 
     override fun onTabUnselected(tab: TabLayout.Tab) {
         stopActionMode()
-        //needToReopenSearch = (activity as? ContentActivity)?.isSearchViewVisible() ?: false
-        //lastQuery = (activity as? ContentActivity)?.getCurrentQuery() ?: ""
-        //if (isStarted()) (viewPager.findCurrentFragment(childFragmentManager) as? BaseFragment)?.stopActionMode()
+        needToReopenSearch = (activity as? ContentActivity)?.isSearchViewVisible() ?: false
+        lastQuery = (activity as? ContentActivity)?.getCurrentQuery() ?: ""
+        if (isStarted()) (viewPager.findCurrentFragment(childFragmentManager) as? BaseFragment)?.stopActionMode()
     }
 
     override fun filter(query: String) {
@@ -110,6 +132,7 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
     }
 
     override fun allowedToExpand() = (getCurrentFragment() as? Filterable)?.allowedToExpand() ?: false
+
     // Interface para comunicación JavaScript-Kotlin
     inner class WebAppInterface {
         @JavascriptInterface
@@ -151,10 +174,16 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
     @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-
+        tabLayout = requireActivity().findViewById(R.id.sliding_tabs)
         webView = view.findViewById(R.id.youtube_webview)
 
-        // Configurar el WebView
+
+        medialibrary = Medialibrary.getInstance()
+
+        // Inicializar PlaylistModel
+        PlaybackService.start(requireContext())
+
+        // Configure el WebView
         val webSettings: WebSettings = webView.settings
         webSettings.javaScriptEnabled = true
         webSettings.domStorageEnabled = true
@@ -163,15 +192,16 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
         webSettings.loadWithOverviewMode = true
         webSettings.useWideViewPort = true
 
-        // Habilitar cookies
+        // Habilitate cookies
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        // Añadir interface JavaScript
+        //
+        //  Add interface JavaScript
         webView.addJavascriptInterface(WebAppInterface(), "AndroidInterface")
 
-        // Configurar WebViewClient
+        // Configure WebViewClient
         webView.webViewClient = object : WebViewClient() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -179,10 +209,10 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
 
                 if (!initialLoadComplete) {
                     initialLoadComplete = true
-                    // Esperar a que el contenido se renderice completamente
+                    // Wait content to load
                     handler.postDelayed({
                         startContentCheck()
-                    }, 4000) // Más tiempo para la carga inicial
+                    }, 4000) // More time to the initial load
                 }
             }
 
@@ -196,16 +226,18 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
             }
         }
 
-        // Cargar YouTube
-        webView.loadUrl("https://m.youtube.com") // Usar versión móvil que es más simple
+        // Load YouTube
+        webView.loadUrl("https://m.youtube.com") // Phone version
     }
+
+
 
     private fun startContentCheck() {
         contentCheckRunnable = object : Runnable {
             override fun run() {
                 if (!isContentLoaded && scrollCount <= maxScrollAttempts) {
                     extractVideoDataFromWebView()
-                    handler.postDelayed(this, 3000) // Verificar cada 3 segundos
+                    handler.postDelayed(this, 3000) // Check every 3 seconds
                 }
             }
         }
@@ -214,6 +246,53 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
         // Extraer datos inicialmente
         handler.postDelayed({ extractVideoDataFromWebView() }, 2000)
     }
+
+    override fun onStart() {
+        setupTabLayout()
+        super.onStart()
+    }
+
+    private fun setupTabLayout() {
+        if (tabLayout == null || !::viewPager.isInitialized) return
+        tabLayout?.addOnTabSelectedListener(this)
+        tabLayout?.let {
+            tabLayoutMediator = TabLayoutMediator(it, viewPager) { tab, position ->
+                tab.text = getPageTitle(position)
+            }
+            tabLayoutMediator.attach()
+        }
+        updateTabs()
+    }
+
+    private fun getPageTitle(position: Int) = when (position) {
+        0 -> getString(R.string.youtube)
+        else -> getString(R.string.playlist)
+    }
+
+    private fun updateTabs() {
+        for (i in 0 until tabLayout!!.tabCount) {
+            val tab = tabLayout!!.getTabAt(i)
+            val view = tab?.customView ?: View.inflate(requireActivity(), R.layout.audio_tab, null)
+            val title = view.findViewById<TextView>(R.id.tab_title)
+            title.text = getPageTitle(i)
+            when (i) {
+                0 -> if (yotubePage) title.addFavoritesIcon() else title.removeDrawables()
+                1 -> if (currentPlaylist) title.addFavoritesIcon() else title.removeDrawables()
+            }
+            tab?.customView = view
+        }
+    }
+
+    var yotubePage: Boolean = false
+        set(value) {
+            field = value
+            updateTabs()
+        }
+    var currentPlaylist: Boolean = false
+        set(value) {
+            field = value
+            updateTabs()
+        }
 
     private fun extractVideoDataFromWebView() {
         val javascriptCode = """
@@ -496,16 +575,18 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
         }
 
         Log.d(TAG, "=== VIDEOS ENCONTRADOS (${videos.size}) ===")
+        //playlistModel.clear()
         videos.forEachIndexed { index, video ->
             Log.d(TAG, "${index + 1}. ${video.title}")
             Log.d(TAG, "   Canal: ${video.channel}")
             Log.d(TAG, "   URL: ${video.url}")
             Log.d(TAG, "   ---")
+            playlistModel.insertMedia(index,createMediaWrapperFromVideo(video))
         }
 
         // Aquí puedes usar la lista de videos
-        if (videos.isNotEmpty()) {
-            // Notificar que tenemos videos
+        if (playlistModel.hasMedia) {
+            playlistModel.play(0)
         }
     }
 
@@ -523,6 +604,32 @@ class YoutubeFragment : BaseFragment(), TabLayout.OnTabSelectedListener, Filtera
         webView.onResume()
     }
 
+    private fun createMediaWrapperFromVideo(video: YouTubeVideo): MediaWrapperImpl {
+        val uri = video.url.toUri()
+
+        return MediaWrapperImpl(uri).apply {
+            title = video.title
+            setDisplayTitle(video.title)
+            //artist = video.channel
+            setArtist(video.channel)
+            type = MediaWrapper.TYPE_STREAM
+
+            // Metadatos adicionales
+            //addMetadata(MediaWrapper.Metadata.Title, video.title)
+            //addMetadata(MediaWrapper.Metadata.Artist, video.channel)
+            //addMetadata(MediaWrapper.Metadata.Album, "YouTube")
+
+            // Duración si está disponible
+           // video.duration.takeIf { it != "Duración no disponible" }?.let {
+           //     duration = parseDuration(it)
+           // }
+
+            // Thumbnail
+            //if (video.thumbnail.isNotBlank()) {
+            //    artworkURL = video.thumbnail
+            //}
+        }
+    }
     override fun onPause() {
         super.onPause()
         webView.onPause()
